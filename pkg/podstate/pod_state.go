@@ -71,7 +71,8 @@ func (ps *PodState) Score(ctx context.Context, state *framework.CycleState, pod 
 
 	//	volumeGroupIDs, _ := getVolumebyPod(ctx, pod)
 
-	//	score := InterfaceToIGW(volumeGroupIDs)
+	//	score := InterfacetoAOS(volumeGroupIDs)
+	//data :=
 
 	// pe.score favors nodes with terminating pods instead of nominated pods
 	// It calculates the sum of the node's terminating pods and nominated pods
