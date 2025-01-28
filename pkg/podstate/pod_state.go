@@ -24,11 +24,15 @@ import (
 	v1 "k8s.io/api/core/v1"
 	storage "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	storagelisters "k8s.io/client-go/listers/storage/v1"
 	storagehelpers "k8s.io/component-helpers/storage/volume"
+	klog "k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type PodState struct {
@@ -37,6 +41,8 @@ type PodState struct {
 	pvcLister corelisters.PersistentVolumeClaimLister
 	scLister  storagelisters.StorageClassLister
 }
+
+var scheme = runtime.NewScheme()
 
 /*
 	type VolumeLocal struct {
@@ -200,6 +206,51 @@ func getErrorAsStatus(err error) *framework.Status {
 			return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
 		}
 		return framework.AsStatus(err)
+	}
+	return nil
+}
+
+func createAndUpdateConfigMap(handle framework.Handle, data map[string]string) error {
+
+	k8sclient, err := client.New(handle.KubeConfig(), client.Options{
+		Scheme: scheme,
+	})
+
+	configMapList := v1.ConfigMapList{}
+	scoreMapName := types.NamespacedName{
+		Name:      "scoreCM",
+		Namespace: "default",
+	}
+	listOpts := client.InNamespace(scoreMapName.Namespace)
+
+	err = k8sclient.List(context.TODO(), &configMapList, listOpts)
+	if err != nil {
+		fmt.Printf("ConfigMap '%s' not found in namespace '%s'\n", scoreMapName.Name, scoreMapName.Namespace)
+	}
+
+	foundConfigMaps := len(configMapList.Items) > 0
+	if foundConfigMaps {
+		for _, existingConfigMap := range configMapList.Items {
+			if existingConfigMap.Name == "score" {
+				existingConfigMap.Data = data
+				err = k8sclient.Update(context.TODO(), &existingConfigMap)
+				if err != nil {
+					klog.Error(err)
+				}
+			} else {
+				configMap := &v1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      scoreMapName.Name,
+						Namespace: scoreMapName.Namespace,
+					},
+					Data: data,
+				}
+				err = k8sclient.Create(context.TODO(), configMap)
+				if err != nil {
+					klog.Error(err)
+				}
+			}
+		}
 	}
 	return nil
 }
