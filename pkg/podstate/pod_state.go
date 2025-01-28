@@ -69,10 +69,15 @@ func (ps *PodState) Score(ctx context.Context, state *framework.CycleState, pod 
 	}
 	// putting to worker node here.
 
-	//	volumeGroupIDs, _ := getVolumebyPod(ctx, pod)
+	volumeGroupIDs, _ = getVolumebyPod(ctx, pod)
 
-	//	score := InterfacetoAOS(volumeGroupIDs)
-	//data :=
+	sortData := InterfacetoAOS(volumeGroupIDs)
+	cvmID := extractCVMidBasedOnSize(sortData)
+
+	configMapToCreate := make(map[string]string)
+	configMapToCreate[nodeName] = cvmID
+
+	createConfigMap := createAndUpdateConfigMap(ps.handle, configMapToCreate)
 
 	// pe.score favors nodes with terminating pods instead of nominated pods
 	// It calculates the sum of the node's terminating pods and nominated pods
