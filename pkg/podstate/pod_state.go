@@ -21,15 +21,30 @@ import (
 	"fmt"
 	"math"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
+	storage "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	storagelisters "k8s.io/client-go/listers/storage/v1"
+	storagehelpers "k8s.io/component-helpers/storage/volume"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 type PodState struct {
-	handle framework.Handle
+	handle    framework.Handle
+	pvLister  corelisters.PersistentVolumeLister
+	pvcLister corelisters.PersistentVolumeClaimLister
+	scLister  storagelisters.StorageClassLister
 }
 
+/*
+	type VolumeLocal struct {
+		pvLister  corelisters.PersistentVolumeLister
+		pvcLister corelisters.PersistentVolumeClaimLister
+		scLister  storagelisters.StorageClassLister
+	}
+*/
 var _ = framework.ScorePlugin(&PodState{})
 
 // Name is the name of the plugin used in the Registry and configurations.
@@ -41,10 +56,16 @@ func (ps *PodState) Name() string {
 
 // Score invoked at the score extension point.
 func (ps *PodState) Score(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
+
 	nodeInfo, err := ps.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
 	if err != nil {
 		return 0, framework.NewStatus(framework.Error, fmt.Sprintf("getting node %q from Snapshot: %v", nodeName, err))
 	}
+	// putting to worker node here.
+
+	//	volumeGroupIDs, _ := getVolumebyPod(ctx, pod)
+
+	//	score := InterfaceToIGW(volumeGroupIDs)
 
 	// pe.score favors nodes with terminating pods instead of nominated pods
 	// It calculates the sum of the node's terminating pods and nominated pods
@@ -98,5 +119,87 @@ func (ps *PodState) NormalizeScore(ctx context.Context, state *framework.CycleSt
 
 // New initializes a new plugin and returns it.
 func New(_ runtime.Object, h framework.Handle) (framework.Plugin, error) {
-	return &PodState{handle: h}, nil
+	informerFactory := h.SharedInformerFactory()
+	pvLister := informerFactory.Core().V1().PersistentVolumes().Lister()
+	pvcLister := informerFactory.Core().V1().PersistentVolumeClaims().Lister()
+	scLister := informerFactory.Storage().V1().StorageClasses().Lister()
+	return &PodState{
+		handle:    h,
+		pvLister:  pvLister,
+		pvcLister: pvcLister,
+		scLister:  scLister,
+	}, nil
+}
+
+/*
+func (no *PodState) Filter(ctx context.Context,
+
+		cycleState *framework.CycleState,
+		pod *v1.Pod,
+		nodeInfo *framework.NodeInfo) *framework.Status {
+		if nodeInfo.Node() == nil {
+			return framework.NewStatus(framework.Error, "node not found")
+		}
+
+		volumeInfo := getVolumebyPod(ctx, pod)
+	}
+*/
+
+func (ps *PodState) getVolumebyPod(ctx context.Context, pod *v1.Pod) ([]string, *framework.Status) {
+
+	var volumeDetails []string
+	for i := range pod.Spec.Volumes {
+		volume := pod.Spec.Volumes[i]
+		if volume.PersistentVolumeClaim == nil {
+			continue
+		}
+		pvcName := volume.PersistentVolumeClaim.ClaimName
+		if pvcName == "" {
+			return nil, framework.NewStatus(framework.UnschedulableAndUnresolvable, "PersistentVolumeClaim had no name")
+		}
+		pvc, err := ps.pvcLister.PersistentVolumeClaims(pod.Namespace).Get(pvcName)
+		if s := getErrorAsStatus(err); !s.IsSuccess() {
+			return nil, s
+		}
+
+		pvName := pvc.Spec.VolumeName
+		if pvName == "" {
+			scName := storagehelpers.GetPersistentVolumeClaimClass(pvc)
+			if len(scName) == 0 {
+				return nil, framework.NewStatus(framework.UnschedulableAndUnresolvable, "PersistentVolumeClaim had no pv name and storageClass name")
+			}
+
+			class, err := ps.scLister.Get(scName)
+			if s := getErrorAsStatus(err); !s.IsSuccess() {
+				return nil, s
+			}
+			if class.VolumeBindingMode == nil {
+				return nil, framework.NewStatus(framework.UnschedulableAndUnresolvable, fmt.Sprintf("VolumeBindingMode not set for StorageClass %q", scName))
+			}
+			if *class.VolumeBindingMode == storage.VolumeBindingWaitForFirstConsumer {
+				// Skip unbound volumes
+				continue
+			}
+
+			return nil, framework.NewStatus(framework.UnschedulableAndUnresolvable, "PersistentVolume had no name")
+		}
+
+		pv, err := ps.pvLister.Get(pvName)
+		if s := getErrorAsStatus(err); !s.IsSuccess() {
+			return nil, s
+		}
+
+		volumeDetails = append(volumeDetails, pv.Spec.CSI.VolumeHandle)
+	}
+	return volumeDetails, nil
+}
+
+func getErrorAsStatus(err error) *framework.Status {
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
+		}
+		return framework.AsStatus(err)
+	}
+	return nil
 }
